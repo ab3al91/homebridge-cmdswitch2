@@ -1,5 +1,6 @@
 var exec = require("child_process").exec;
 var Accessory, Service, Characteristic, UUIDGen;
+const axios = require('axios')
 
 module.exports = function (homebridge) {
   Accessory = homebridge.platformAccessory;
@@ -73,7 +74,8 @@ cmdSwitchPlatform.prototype.addAccessory = function (data) {
   // Confirm variable type
   data.polling = data.polling === true;
   data.interval = parseInt(data.interval, 10) || 1;
-  data.timeout = parseInt(data.timeout, 10) || 1; 
+  data.timeout = parseInt(data.timeout, 10) || 1;
+  //data.status = parseInt(data.status, 10) || 4; 
   if (data.manufacturer) data.manufacturer = data.manufacturer.toString();
   if (data.model) data.model = data.model.toString();
   if (data.serial) data.serial = data.serial.toString();
@@ -89,6 +91,9 @@ cmdSwitchPlatform.prototype.addAccessory = function (data) {
   cache.timeout = data.timeout;
   cache.manufacturer = data.manufacturer;
   cache.model = data.model;
+  cache.register = data.register;
+  cache.slave = data.slave;
+  cache.status = data.status;
   cache.serial = data.serial;
   if (cache.state === undefined) {
     cache.state = false;
@@ -99,7 +104,7 @@ cmdSwitchPlatform.prototype.addAccessory = function (data) {
   this.getInitState(accessory);
 
   // Configure state polling
-  if (data.polling && data.state_cmd) this.statePolling(data.name);
+  if (data.polling) this.statePolling(data.name);
 }
 
 // Method to remove accessories from HomeKit
@@ -150,23 +155,27 @@ cmdSwitchPlatform.prototype.getState = function (thisSwitch, callback) {
   var self = this;
 
   // Return cached state if no state_cmd provided
-  if (thisSwitch.state_cmd === undefined) {
+  /*if (thisSwitch.state_cmd === undefined) {
     callback(null, thisSwitch.state);
     return;
-  }
+  }*/
 
   // Execute command to detect state
-  exec(thisSwitch.state_cmd, function (error, stdout, stderr) {
-    var state = error ? false : true;
-
-    // Error detection
-    if (stderr) {
-      self.log("Failed to determine " + thisSwitch.name + " state.");
-      self.log(stderr);
-    }
-
-    callback(stderr, state);
-  });
+  //if(thisSwitch.status == 4){
+    axios.get('http://localhost/read/'+thisSwitch.slave+'/'+thisSwitch.status).then((resp)=> {
+    //var state = error ? false : true;
+      //this.log("Status is "+thisSwitch.status)
+      callback(null, resp.data);
+    });
+  //}
+  /*else{
+    axios.get('http://localhost/read/'+thisSwitch.slave+'/'+thisSwitch.register).then((resp)=> {
+    //var state = error ? false : true;
+      //this.log("Status is "+thisSwitch.status)
+      callback(null, resp.data);
+    });
+  }*/
+  
 }
 
 // Method to determine current state
@@ -203,7 +212,7 @@ cmdSwitchPlatform.prototype.getPowerState = function (thisSwitch, callback) {
     // Check state if polling is disabled
     this.getState(thisSwitch, function (error, state) {
       // Update state if command exists
-      if (thisSwitch.state_cmd) thisSwitch.state = state;
+      thisSwitch.state = state;
       if (!error) self.log(thisSwitch.name + " is " + (thisSwitch.state ? "on." : "off."));
       callback(error, thisSwitch.state);
     });
@@ -214,42 +223,31 @@ cmdSwitchPlatform.prototype.getPowerState = function (thisSwitch, callback) {
 cmdSwitchPlatform.prototype.setPowerState = function (thisSwitch, state, callback) {
   var self = this;
 
-  var cmd = state ? thisSwitch.on_cmd : thisSwitch.off_cmd;
-  var notCmd = state ? thisSwitch.off_cmd : thisSwitch.on_cmd;
-  var tout = null;
-
-  // Execute command to set state
-  exec(cmd, function (error, stdout, stderr) {
-    // Error detection
-    if (error && (state !== thisSwitch.state)) {
-      self.log("Failed to turn " + (state ? "on " : "off ") + thisSwitch.name);
-      self.log(stderr);
-    } else {
-      if (cmd) self.log(thisSwitch.name + " is turned " + (state ? "on." : "off."));
-      thisSwitch.state = state;
-      error = null;
-    }
-
-    // Restore switch after 1s if only one command exists
-    if (!notCmd && !thisSwitch.state_cmd) {
-      setTimeout(function () {
-        self.accessories[thisSwitch.name].getService(Service.Switch)
-          .setCharacteristic(Characteristic.On, !state);
-      }, 1000);
-    }
-
-    if (tout) {
-      clearTimeout(tout);
-      callback(error);
-    }
-  });
-
-  // Allow 1s to set state but otherwise assumes success
-  tout = setTimeout(function () {
+  // var cmd = state ? thisSwitch.on_cmd : thisSwitch.off_cmd;
+  // var notCmd = state ? thisSwitch.off_cmd : thisSwitch.on_cmd;
+  var tout = setTimeout(function () {
     tout = null;
     self.log("Turning " + (state ? "on " : "off ") + thisSwitch.name + " took too long [" + thisSwitch.timeout + "s], assuming success." );
     callback();
   }, thisSwitch.timeout * 1000);
+
+  // Execute command to set state
+  axios.get('http://localhost/write/'+thisSwitch.slave+'/'+thisSwitch.register+'/'+state).then((resp)=> {
+    
+    
+    self.log(thisSwitch.name + " is turned " + (state ? "on." : "off."));
+      
+    thisSwitch.state = state;
+
+    if (tout) {
+      clearTimeout(tout);
+      callback();
+    }
+  }).catch((stderr)=>{
+      self.log("Failed to turn " + (state ? "on " : "off ") + thisSwitch.name);
+      self.log(stderr);
+  });
+
 }
 
 // Method to handle identify request
@@ -397,6 +395,20 @@ cmdSwitchPlatform.prototype.configurationRequestHandler = function (context, req
               "title": "Model",
               "placeholder": context.operation ? "Leave blank if unchanged" : "Default-Model"
             }, {
+              "id": "register",
+              "title": "Register",
+              "placeholder": context.operation ? "Leave blank if unchanged" : "Default-Register"
+            },
+            {
+              "id": "slave",
+              "title": "Slave",
+              "placeholder": context.operation ? "Leave blank if unchanged" : "Default-Slave"
+            },
+            {
+              "id": "status",
+              "title": "Status",
+              "placeholder": context.operation ? "Leave blank if unchanged" : "1"
+            },{
               "id": "serial",
               "title": "Serial",
               "placeholder": context.operation ? "Leave blank if unchanged" : "Default-SerialNumber"
@@ -436,6 +448,7 @@ cmdSwitchPlatform.prototype.configurationRequestHandler = function (context, req
         newSwitch.on_cmd = userInputs.on_cmd || newSwitch.on_cmd;
         newSwitch.off_cmd = userInputs.off_cmd || newSwitch.off_cmd;
         newSwitch.state_cmd = userInputs.state_cmd || newSwitch.state_cmd;
+        newSwitch.state_cmd = userInputs.state_cmd || newSwitch.state_cmd;
         if (userInputs.polling.toUpperCase() === "TRUE") {
           newSwitch.polling = true;
         } else if (userInputs.polling.toUpperCase() === "FALSE") {
@@ -445,6 +458,9 @@ cmdSwitchPlatform.prototype.configurationRequestHandler = function (context, req
         newSwitch.timeout = userInputs.timeout || newSwitch.timeout;
         newSwitch.manufacturer = userInputs.manufacturer;
         newSwitch.model = userInputs.model;
+        newSwitch.register = userInputs.register;
+        newSwitch.slave = userInputs.slave;
+        newSwitch.status = userInputs.status;
         newSwitch.serial = userInputs.serial;
 
         // Register or update accessory in HomeKit
@@ -497,6 +513,9 @@ cmdSwitchPlatform.prototype.configurationRequestHandler = function (context, req
             'timeout': accessory.context.timeout,
             'manufacturer': accessory.context.manufacturer,
             'model': accessory.context.model,
+            'register': accessory.context.register,
+            'slave': accessory.context.slave,
+            'status': accessory.context.status,
             'serial': accessory.context.serial
           };
           return data;
